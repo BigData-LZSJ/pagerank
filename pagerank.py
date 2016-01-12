@@ -1,14 +1,16 @@
 # -*- coding: utf-8 -*-
 #!/bin/python
 import time
+import math
 
 class Vertex_E(object):
     # 企业编号+'E','E',信用值，信用等级
-    def __init__(self, idx, prop, creditscore, rating):
+    def __init__(self, idx, prop, creditscore, rating, capture):
         self.idx = idx
         self.prop = prop
         self.creditscore = creditscore
         self.rating = rating
+        self.capture = capture
 
 class Vertex_P(object):
     # 人编号+'P','P',身份证号
@@ -26,12 +28,14 @@ class Graph(object):
     def __init__(self, v_list):
         self.creditscores = {}
         self.link_list = {}
+        self.captures = {}
         for vertex in v_list:
             if is_E(vertex):
                 self.creditscores[vertex] = v_list[vertex].creditscore
+                self.captures[vertex] = v_list[vertex].capture
             self.link_list[vertex] = {}
-            link = Link(1.0, 'self')
-            self.add_link(vertex, vertex, link)
+            # link = Link(1.0, 'self')
+            # self.add_link(vertex, vertex, link)
     def add_link(self, v1, v2, link):
         if v2 in self.link_list[v1]:
             # 取权重最大的
@@ -52,11 +56,18 @@ def load_vertex_E(vertex_fn, prop, v_list):
     for line in vertex_file.readlines():
         vertex = line.strip().split(',')
         vertex[0] = vertex[0].strip('"')
+        if vertex[8] == '' or float(vertex[8])<0.001:
+            if vertex[7] == '':
+                capture = -1;
+            else:
+                capture = float(vertex[7])
+        else:
+            capture = float(vertex[8])*6.4732
         if vertex[9] == '':
-            v = Vertex_E(vertex[0]+prop, prop, -1, 'E')
+            v = Vertex_E(vertex[0]+prop, prop, -1, 'E', capture)
             blank_node_cnt = blank_node_cnt + 1
         else:
-            v = Vertex_E(vertex[0]+prop, prop, float(vertex[9]), vertex[10])
+            v = Vertex_E(vertex[0]+prop, prop, float(vertex[9]), vertex[10], capture)
         v_list[vertex[0]+prop] = v
     print "Blank E:" + str(blank_node_cnt)
     return v_list
@@ -99,7 +110,7 @@ def load_link(link_fn, graph):
             graph.add_link(v2, v1, link_neg)
     return graph
  
-def pagerank(graph, v_list, damping=0.85, epsilon=1.0e-8):
+def pagerank(graph, v_list, damping=0.85, epsilon=1.0e-8, pr_weight=0.8):
     outlink_map = {}
     inlink_counts = {}
     
@@ -155,11 +166,26 @@ def pagerank(graph, v_list, damping=0.85, epsilon=1.0e-8):
         print delta
         PageRanks, new_PageRanks = new_PageRanks, PageRanks
         n_iterations += 1
-    
+
+    # 归一化
+    nor = max(PageRanks.values()) - min(PageRanks.values())
+    # print ""
+    # print "nor:"
+    # print nor
+    max_capture = math.log(max(graph.captures.values()),2)
+    for k in PageRanks.keys():
+        if (is_E(k) and graph.captures[k]>0):
+            PageRanks[k] = pr_weight * (PageRanks[k] - min(PageRanks.values()))/nor + (1 - pr_weight) * math.log(graph.captures[k],2) / max_capture
+        else:
+            PageRanks[k] = (PageRanks[k] - min(PageRanks.values()))/nor
+        # PageRanks[k] = PageRanks[k]/nor
+    # print "sum_pagerank:"
+    # print sum_pagerank/nor
     return PageRanks, n_iterations       
 
 def groupscore_pagerank(PageRanks,graph,v_list):
     groupscores = {}
+    no_groupscore_count = 0
     for node in v_list:
         # 只计算E
         if is_P(node):
@@ -196,10 +222,12 @@ def groupscore_pagerank(PageRanks,graph,v_list):
             denominator += v[1]
             numerator += v[2]
         if denominator == 0:
-            groupscores[node] = ""
+            # 若无法预测，则原始分为其群体分
+            groupscores[node] = graph.creditscores[node]
+            no_groupscore_count += 1
             continue
         groupscores[node] = denominator/numerator
-    return groupscores
+    return groupscores,no_groupscore_count
 
 if __name__ == '__main__':
     v_list = {}
@@ -213,7 +241,8 @@ if __name__ == '__main__':
     
     print "load finish!"
 
-    PageRanks, n_iterations = pagerank(graph, v_list, 0.8, 1.0e-8)
+    PageRanks, n_iterations = pagerank(graph, v_list, 0.8, 1.0e-8, 0.9)
+
 
     # pagerank结果输出
     print "=========== PageRanks ==========="
@@ -227,64 +256,84 @@ if __name__ == '__main__':
     print n_iterations
 
     # 计算“群体分”
-    groupscores = groupscore_pagerank(PageRanks,graph,v_list)
+    groupscores,no_groupscore_count = groupscore_pagerank(PageRanks,graph,v_list)
+    max_negs = {}
     max_neg = 0
-    thre = -100
-    alert_count = 0
+    thre_list = [-300,-200,-150,-100,-50,0]
+    alert_count = [0] * len(thre_list)
     fs = open("groupscores_pagerank.txt", 'w')
     fs.close()
+    no_originalscore_count = 0
+    sum_diff = 0
     for node in groupscores:
-        if groupscores[node]=="":
-            print node + "\t" + str(groupscores[node]) + "\t" + str(graph.creditscores[node])
-            fs = open("groupscores_pagerank.txt", 'a')
-            fs.write( node + "\t" + str(groupscores[node]) + "\t" + str(graph.creditscores[node]) + "\n")
-            fs.close()
-        else:
-            print node + "\t" + str(groupscores[node]) + "\t" + str(graph.creditscores[node]) + "\t" + str(groupscores[node]-graph.creditscores[node])
-            fs = open("groupscores_pagerank.txt", 'a')
-            fs.write( node + "\t" + str(groupscores[node]) + "\t" + str(graph.creditscores[node]) + "\t" + str(groupscores[node]-graph.creditscores[node]) + "\n")
-            fs.close()
-            if groupscores[node]-graph.creditscores[node]<max_neg:
-                max_neg = groupscores[node]-graph.creditscores[node]
-            if groupscores[node]-graph.creditscores[node]<thre:
-                alert_count += 1
+        original_score = graph.creditscores[node]
+        # 无原始分，则用群体分替代
+        if (original_score<0):
+            no_originalscore_count += 1
+            original_score = groupscores[node]
+        sum_diff += groupscores[node]-original_score
+        # print node + "\t" + str(groupscores[node]) + "\t" + str(original_score) + "\t" + str(groupscores[node]-original_score)
+        fs = open("groupscores_pagerank.txt", 'a')
+        fs.write( node + "\t" + str(groupscores[node]) + "\t" + str(original_score) + "\t" + str(groupscores[node]-original_score) + "\n")
+        fs.close()
+        if groupscores[node]-original_score<max_neg:
+            max_neg = groupscores[node]-original_score
+        for i in range(len(thre_list)):
+            if groupscores[node]-original_score<thre_list[i]:
+                alert_count[i] += 1
+                if i==0:
+                    max_negs[node] = groupscores[node]
     print "=========== finish! ==========="
-    print str(alert_count) + " companies " + str(thre) + " below independent score"
+    for i in range(len(thre_list)):
+        print str(alert_count[i]) + " companies " + str(thre_list[i]) + " below independent score"
 
-
-    print ""
-    print ""
-    print ""
-
+    print "avg(groupscores-original_score):\t" + str(sum_diff/(len(groupscores.keys())))
+    # print "avg(groupscores-original_score):\t" + str(sum_diff/( len(groupscores.keys()) - no_originalscore_count- no_groupscore_count ))
     print "max_neg:\t"+ str(max_neg)
+
+    print ""
+    print str(no_groupscore_count) + " companies no groupscore"
+    print str(no_originalscore_count) + " companies no original score"
+
+    print ""
+    print ""
+    print ""
+
+    
     # 查看
-    max_neg_node = "anon_S3478E"
-    print "=========== check:\t" + max_neg_node + " ==========="
-    print max_neg_node + "\t" + str(groupscores[max_neg_node]) + "\t" + str(graph.creditscores[max_neg_node]) + "\t" + str(groupscores[max_neg_node]-graph.creditscores[max_neg_node])
-    # 二级节点集合
-    # nb_nb_node: [nb_node,denominator,numerator]
-    nb_nb_node_dict = {}
-    # 一级邻边节点
-    for nb_node in graph.link_list[max_neg_node].keys():
-        # 只有E有独立信用分，且分非负
-        if (is_E(nb_node) and graph.creditscores[nb_node]>=0):
-            weight = graph.link_list[max_neg_node][nb_node].link_weight * PageRanks[nb_node]
-            print "level 1: " + nb_node + "\tweight:" + str(weight) + "\tcreditscore:" + str(graph.creditscores[nb_node])
-        # 二级邻边节点
-        for nb_nb_node in graph.link_list[nb_node].keys():
-            # 只有E有独立信用分
-            if is_P(nb_nb_node):
-                continue
-            if graph.creditscores[nb_nb_node]<0:
-                continue
-            # 刨去node及一级邻边节点
-            if (nb_nb_node != max_neg_node and (nb_nb_node not in graph.link_list[max_neg_node].keys())):
-                temp_weight = graph.link_list[max_neg_node][nb_node].link_weight * PageRanks[nb_node] * graph.link_list[nb_node][nb_nb_node].link_weight * PageRanks[nb_nb_node]
-                if nb_nb_node in nb_nb_node_dict.keys():
-                    if temp_weight > nb_nb_node_dict[nb_nb_node][2]:
+    # max_neg_node = "anon_S3478E"
+    # +['anon_S4847E']
+    for max_neg_node in max_negs.keys():
+        print "=========== check:\t" + max_neg_node + " ==========="
+        print max_neg_node + "\t" + str(groupscores[max_neg_node]) + "\t" + str(graph.creditscores[max_neg_node]) + "\t" + str(groupscores[max_neg_node]-graph.creditscores[max_neg_node])
+        # 二级节点集合
+        # nb_nb_node: [nb_node,denominator,numerator]
+        nb_nb_node_dict = {}
+        # 一级邻边节点
+        for nb_node in graph.link_list[max_neg_node].keys():
+            # 只有E有独立信用分，且分非负
+            if (is_E(nb_node) and graph.creditscores[nb_node]>=0):
+                weight = graph.link_list[max_neg_node][nb_node].link_weight * PageRanks[nb_node]
+                print "level 1: " + nb_node + "\tweight:" + str(weight) + "\tcreditscore:" + str(graph.creditscores[nb_node])
+            # 二级邻边节点
+            for nb_nb_node in graph.link_list[nb_node].keys():
+                # 只有E有独立信用分
+                if is_P(nb_nb_node):
+                    continue
+                if graph.creditscores[nb_nb_node]<0:
+                    continue
+                # 刨去node及一级邻边节点
+                if (nb_nb_node != max_neg_node and (nb_nb_node not in graph.link_list[max_neg_node].keys())):
+                    temp_weight = graph.link_list[max_neg_node][nb_node].link_weight * PageRanks[nb_node] * graph.link_list[nb_node][nb_nb_node].link_weight * PageRanks[nb_nb_node]
+                    if nb_nb_node in nb_nb_node_dict.keys():
+                        if temp_weight > nb_nb_node_dict[nb_nb_node][2]:
+                            nb_nb_node_dict[nb_nb_node] = [nb_node, graph.creditscores[nb_nb_node] * temp_weight, temp_weight]
+                    else:
                         nb_nb_node_dict[nb_nb_node] = [nb_node, graph.creditscores[nb_nb_node] * temp_weight, temp_weight]
-                else:
-                    nb_nb_node_dict[nb_nb_node] = [nb_node, graph.creditscores[nb_nb_node] * temp_weight, temp_weight]
-    for k,v in nb_nb_node_dict.items():
-        print "level 2: " + k + "\tweight:" + str(v[2]) + "\tcreditscore:" + str(graph.creditscores[k])
+        for k,v in nb_nb_node_dict.items():
+            print "level 2: " + k + "\tweight:" + str(v[2]) + "\tcreditscore:" + str(graph.creditscores[k])
+
+        print ""
+        print ""
+        print ""
 
